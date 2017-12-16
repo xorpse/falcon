@@ -23,8 +23,9 @@ use il::*;
 use memory::MemoryPermissions;
 use std::collections::{BTreeMap, VecDeque};
 
-pub mod x86;
+pub mod arm;
 pub mod mips;
+pub mod x86;
 
 
 const DEFAULT_TRANSLATION_BLOCK_BYTES: usize = 64;
