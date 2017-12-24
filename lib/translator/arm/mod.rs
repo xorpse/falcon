@@ -1,11 +1,12 @@
 //! Capstone-based translator for 32-bit x86.
 
 use falcon_capstone::{capstone, capstone_sys};
+use falcon_capstone::capstone_sys::arm_op_type;
 use error::*;
 use il::*;
 use translator::{Translator, BlockTranslationResult};
 
-
+#[cfg(test)] mod test;
 mod semantics;
 
 /// The X86 translator.
@@ -22,7 +23,8 @@ impl Arm {
 
 impl Translator for Arm {
     fn translate_block(&self, bytes: &[u8], address: u64) -> Result<BlockTranslationResult> {
-        let cs = match capstone::Capstone::new(capstone::cs_arch::CS_ARCH_ARM, capstone::CS_MODE_32) {
+        let cs = match capstone::Capstone::new(capstone::cs_arch::CS_ARCH_ARM,
+                                               capstone::CS_MODE_ARM) {
             Ok(cs) => cs,
             Err(_) => return Err("Capstone Error".into())
         };
@@ -74,16 +76,14 @@ impl Translator for Arm {
                     capstone::arm_insn::ARM_INS_ADR  => semantics::adr(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_AND  => semantics::and(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_ASR  => semantics::asr(&mut instruction_graph, &instruction),
-                    capstone::arm_insn::ARM_INS_B    => semantics::b(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BFC  => semantics::bfc(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BFI  => semantics::bfi(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BIC  => semantics::bic(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BKPT  => semantics::bkpt(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BL   => semantics::bl(&mut instruction_graph, &instruction),
                     capstone::arm_insn::ARM_INS_BLX  => semantics::blx(&mut instruction_graph, &instruction),
-                    capstone::arm_insn::ARM_INS_BX   => semantics::bx(&mut instruction_graph, &instruction),
-                    capstone::arm_insn::ARM_INS_BXJ  => semantics::bx(&mut instruction_graph, &instruction),
-
+                    capstone::arm_insn::ARM_INS_CLZ  => semantics::clz(&mut instruction_graph, &instruction),
+                    capstone::arm_insn::ARM_INS_SUB  => semantics::sub(&mut instruction_graph, &instruction),
                     _ => return Err(format!("Unhandled instruction {} at 0x{:x}",
                         instruction.mnemonic,
                         instruction.address
@@ -96,12 +96,53 @@ impl Translator for Arm {
 
                 length += instruction.size as usize;
 
-                if instruction_id == capstone::arm_insn::ARM_INS_BX {
-                }
-
-                // instructions that terminate blocks
                 match instruction_id {
-                    _ => ()
+                    capstone::arm_insn::ARM_INS_B => {
+                        let detail = semantics::details(&instruction)?;
+                        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_IMM);
+                        successors.push((detail.operands[0].imm() as u64, None));
+                        break;
+                    },
+                    capstone::arm_insn::ARM_INS_BX |
+                    capstone::arm_insn::ARM_INS_BXJ => {
+                        let detail = semantics::details(&instruction)?;
+                        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_IMM);
+                        successors.push((detail.operands[0].imm() as u64 + 1, None));
+                        break;
+                    },
+                    capstone::arm_insn::ARM_INS_CBNZ => {
+                        let detail = semantics::details(&instruction)?;
+                        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_IMM);
+                        let register = semantics::get_register_expression(&instruction, 0)?;
+                        let condition = Expression::cmpneq(register.clone(),
+                                                           expr_const(0, register.bits()))?;
+                        successors.push((
+                            detail.operands[1].imm() as u64,
+                            Some(condition.clone())
+                        ));
+                        successors.push((
+                            instruction.address as u64 + 4,
+                            Some(Expression::cmpeq(condition, expr_const(0, 1))?)
+                        ));
+                        break; 
+                    },
+                    capstone::arm_insn::ARM_INS_CBZ => {
+                        let detail = semantics::details(&instruction)?;
+                        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_IMM);
+                        let register = semantics::get_register_expression(&instruction, 0)?;
+                        let condition = Expression::cmpeq(register.clone(),
+                                                          expr_const(0, register.bits()))?;
+                        successors.push((
+                            detail.operands[1].imm() as u64,
+                            Some(condition.clone())
+                        ));
+                        successors.push((
+                            instruction.address as u64 + 4,
+                            Some(Expression::cmpeq(condition, expr_const(0, 1))?)
+                        ));
+                        break; 
+                    },
+                    _ => {}
                 }
             }
             else {

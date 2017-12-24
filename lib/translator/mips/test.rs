@@ -1,6 +1,5 @@
 use executor::*;
 use memory;
-use il::*;
 use RC;
 use translator::mips::*;
 use types::{Architecture, Endian};
@@ -29,7 +28,7 @@ fn init_driver_block<'d>(
     bytes.append(&mut vec![0x00, 0x84, 0x20, 0x25]);
 
     let mut backing = memory::backing::Memory::new(Endian::Big);
-    backing.set_memory(0, bytes.to_vec(),
+    backing.set_memory(0, bytes,
         memory::MemoryPermissions::EXECUTE | memory::MemoryPermissions::READ);
     
     let function = Mips::new().translate_function(&backing, 0).unwrap();

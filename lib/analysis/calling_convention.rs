@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 /// Available type of calling conventions
 pub enum CallingConventionType {
+    Arm,
     MipsSystemV,
     MipselSystemV,
     Cdecl
@@ -140,7 +141,7 @@ impl CallingConvention {
                 trashed_registers.insert(il::scalar("ecx", 32));
                 trashed_registers.insert(il::scalar("edx", 32));
 
-                let return_type = ReturnAddressType::Register(il::scalar("esp", 32));
+                let return_type = ReturnAddressType::Stack(0);
 
                 CallingConvention {
                     argument_registers: Vec::new(),
@@ -152,6 +153,41 @@ impl CallingConvention {
                     return_register: il::scalar("eax", 32)
                 }
             },
+            CallingConventionType::Arm => {
+                let argument_registers = vec![
+                    il::scalar("r0", 32), il::scalar("r1", 32),
+                    il::scalar("r2", 32), il::scalar("r3", 32)
+                ];
+
+                let mut preserved_registers = HashSet::new();
+                preserved_registers.insert(il::scalar("r4", 32));
+                preserved_registers.insert(il::scalar("r5", 32));
+                preserved_registers.insert(il::scalar("r6", 32));
+                preserved_registers.insert(il::scalar("r7", 32));
+                preserved_registers.insert(il::scalar("r8", 32));
+                preserved_registers.insert(il::scalar("r10", 32));
+                preserved_registers.insert(il::scalar("r11", 32));
+                preserved_registers.insert(il::scalar("sp", 32));
+                preserved_registers.insert(il::scalar("lr", 32));
+
+                let mut trashed_registers = HashSet::new();
+                trashed_registers.insert(il::scalar("r0", 32));
+                trashed_registers.insert(il::scalar("r1", 32));
+                trashed_registers.insert(il::scalar("r2", 32));
+                trashed_registers.insert(il::scalar("r3", 32));
+
+                let return_type = ReturnAddressType::Register(il::scalar("lr", 32));
+
+                CallingConvention {
+                    argument_registers: argument_registers,
+                    preserved_registers: preserved_registers,
+                    trashed_registers: trashed_registers,
+                    stack_argument_offset: 4,
+                    stack_argument_length: 4,
+                    return_address_type: return_type,
+                    return_register: il::scalar("r0", 32)
+                }
+            }
         }
     }
 

@@ -13,8 +13,8 @@
 //! * **translator** - Translators from native architectures to Falcon IL.
 //!
 //! Falcon also has bindings for the scripting language
-//! [gluon](https://github.com/gluon-lang/gluon), which makes exploratory 
-//! analysis over Falcon quick and pleasant.
+//! [gluon](https://github.com/gluon-lang/gluon) in a sister project named
+//! Osprey, which makes exploratory analysis over Falcon quick and pleasant.
 //!
 //! ```
 //! # use falcon::error::*;

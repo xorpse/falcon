@@ -47,6 +47,12 @@ impl<'e> State<'e> {
     }
 
 
+    /// Get all the scalars for this state
+    pub fn scalars(&self) -> &BTreeMap<String, il::Constant> {
+        &self.scalars
+    }
+
+
     /// Symbolize an expression, replacing all scalars with the concrete values
     /// stored in this state.
     pub fn symbolize_expression(&self, expression: &il::Expression)

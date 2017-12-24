@@ -1,5 +1,4 @@
 use falcon_capstone::capstone;
-use falcon_capstone::capstone::cs_arm_op;
 use falcon_capstone::capstone_sys::{arm_op_type, arm_reg};
 use error::*;
 use il::*;
@@ -17,10 +16,6 @@ pub struct ArmRegister {
 
 
 impl ArmRegister {
-    pub fn name(&self) -> &str {
-        self.name
-    }
-
     pub fn scalar(&self) -> Scalar {
         scalar(self.name, self.bits)
     }
@@ -52,30 +47,81 @@ const ARMREGISTERS : &'static [ArmRegister] = &[
 ];
 
 
-/// Takes a capstone register enum and returns an `X86Register`
-pub fn get_register(capstone_id: arm_reg) -> Result<&'static ArmRegister> {
+/// Get the expression for a register operand of this instruction
+pub fn get_register_expression(instruction: &capstone::Instr, index: usize)
+    -> Result<Expression> {
+
+    let detail = details(instruction)?;
+    
+    assert!(detail.operands[index].type_ == arm_op_type::ARM_OP_REG);
+    let capstone_id = detail.operands[index].reg();
+
+    if capstone_id == arm_reg::ARM_REG_PC {
+        Ok(expr_const(instruction.address + 8, 32))
+    }
+    else {
+        for register in ARMREGISTERS.iter() {
+            if register.capstone_reg == capstone_id {
+                return Ok(register.expression());
+            }
+        }
+        Err("Could not find register".into())
+    }
+}
+
+/// Get the scalar for a register operand of this instruction
+pub fn get_register_scalar(instruction: &capstone::Instr, index: usize)
+    -> Result<Scalar> {
+
+    let detail = details(instruction)?;
+    assert!(detail.operands[index].type_ == arm_op_type::ARM_OP_REG);
+    let capstone_id = detail.operands[index].reg();
+
     for register in ARMREGISTERS.iter() {
         if register.capstone_reg == capstone_id {
-            return Ok(&register);
+            return Ok(register.scalar());
         }
     }
     Err("Could not find register".into())
 }
 
+/// Get the expression for a register by arm_reg
+fn register_expression(instruction: &capstone::Instr, id: arm_reg)
+    -> Result<Expression> {
+    
+    if id == arm_reg::ARM_REG_PC {
+        Ok(expr_const(instruction.address + 8, 32))
+    }
+    else {
+        for register in ARMREGISTERS.iter() {
+            if register.capstone_reg == id {
+                return Ok(register.expression())
+            }
+        }
+        Err("Could not find register".into())
+    }
+}
+
 /// Get an operand of many different types.
-pub fn get_operand(operand: &cs_arm_op) -> Result<Expression> {
+pub fn get_operand(instruction: &capstone::Instr, index: usize)
+    -> Result<Expression> {
+    
+    let detail = details(instruction)?;
+    let operand = detail.operands[index];
+
     Ok(match operand.type_ {
-        arm_op_type::ARM_OP_REG => get_register(operand.reg())?.expression(),
+        arm_op_type::ARM_OP_REG => get_register_expression(instruction, index)?,
         arm_op_type::ARM_OP_IMM => expr_const(operand.imm() as u64, 32),
         arm_op_type::ARM_OP_MEM => {
-            let expr = get_register(operand.mem().base.into())?.expression();
+            let expr = register_expression(instruction,
+                                           operand.mem().base.into())?;
             let index_reg: arm_reg = operand.mem().index.into();
             let expr = if index_reg != arm_reg::ARM_REG_INVALID {
                 if operand.mem().scale == 1 {
-                    Expr::add(expr, get_register(index_reg)?.expression())?
+                    Expr::add(expr, register_expression(instruction, index_reg)?)?
                 }
                 else {
-                    Expr::sub(expr, get_register(index_reg)?.expression())?
+                    Expr::sub(expr, register_expression(instruction, index_reg)?)?
                 }
             }
             else {
@@ -110,22 +156,28 @@ pub fn details(instruction: &capstone::Instr) -> Result<capstone::cs_arm> {
 /// Convenience function set set the zf based on result
 pub fn set_z(block: &mut Block, result: Expression) -> Result<()> {
     let expr = Expr::cmpeq(result.clone(), expr_const(0, result.bits()))?;
-    block.assign(scalar("Z", 1), expr);
+    block.assign(scalar("z", 1), expr);
     Ok(())
 }
 
 
 /// Convenience function to set the sf based on result
 pub fn set_n(block: &mut Block, result: Expression) -> Result<()> {
-    let expr = Expr::shr(result.clone(), expr_const((result.bits() - 1) as u64, result.bits()))?;
+    let expr = Expr::shr(result.clone(), 
+                         expr_const((result.bits() - 1) as u64, result.bits()))?;
     let expr = Expr::trun(1, expr)?;
-    block.assign(scalar("N", 1), expr);
+    block.assign(scalar("n", 1), expr);
     Ok(())
 }
 
 
 /// Convenience function to set the of based on result and both operands
-pub fn set_v(block: &mut Block, result: Expression, lhs: Expression, rhs: Expression) -> Result<()> {
+pub fn set_v(block: &mut Block, 
+             result: Expression,
+             lhs: Expression,
+             rhs: Expression)
+    -> Result<()> {
+
     let expr = Expr::cmpeq(
         Expr::trun(1, Expr::shr(
             lhs.clone(),
@@ -146,20 +198,23 @@ pub fn set_v(block: &mut Block, result: Expression, lhs: Expression, rhs: Expres
             expr
         )?
     )?;
-    block.assign(scalar("V", 1), expr);
+    block.assign(scalar("v", 1), expr);
     Ok(())
 }
 
 
 /// Convenience function to set the cf based on result and lhs operand
 pub fn set_c(block: &mut Block, result: Expression, lhs: Expression) -> Result<()> {
-    let expr = Expr::cmpltu(lhs.clone().into(), result.clone().into())?;
-    block.assign(scalar("CF", 1), expr);
+    let expr = Expr::cmpltu(result, lhs)?;
+    block.assign(scalar("c", 1), expr);
     Ok(())
 }
 
 
-pub fn adc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn adc(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
@@ -167,15 +222,13 @@ pub fn adc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
         let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_REG);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let lhs = get_register(detail.operands[1].reg())?.expression();
-        let rhs = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
         let expr = Expr::add(
             Expr::add(lhs.clone(), rhs.clone())?,
-            Expr::zext(lhs.bits(), expr_scalar("C", 1))?
+            Expr::zext(lhs.bits(), expr_scalar("c", 1))?
         )?;
 
         block.assign(dst.clone(), expr);
@@ -197,7 +250,10 @@ pub fn adc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn add(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn add(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
@@ -205,11 +261,9 @@ pub fn add(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
         let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_REG);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let lhs = get_register(detail.operands[1].reg())?.expression();
-        let rhs = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
         block.assign(dst.clone(), Expr::add(lhs.clone(), rhs.clone())?);
 
@@ -230,7 +284,10 @@ pub fn add(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn adr(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn adr(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
@@ -238,10 +295,8 @@ pub fn adr(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_IMM);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let imm = get_operand(&detail.operands[1])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let imm = get_operand(instruction, 1)?;
 
         let pc = expr_const(instruction.address + 8, 32);
         let expr = if detail.operands[2].subtracted {
@@ -263,7 +318,10 @@ pub fn adr(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn and(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn and(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
@@ -271,11 +329,9 @@ pub fn and(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
         let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_REG);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let lhs = get_register(detail.operands[1].reg())?.expression();
-        let rhs = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
         block.assign(dst.clone(), Expr::and(lhs.clone(), rhs.clone())?);
 
@@ -296,19 +352,20 @@ pub fn and(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn asr(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn asr(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
 
+    let detail = try!(details(instruction));
+        
     // create a block for this instruction
     let block_index = {
         let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_REG);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let lhs = get_register(detail.operands[1].reg())?.expression();
-        let rhs = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
         // do the shift right
         let expr = Expr::shr(lhs.clone(), rhs.clone())?;
@@ -354,44 +411,18 @@ pub fn asr(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn b(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn bfc(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
 
     // create a block for this instruction
     let block_index = {
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_IMM);
-        let imm = get_operand(&detail.operands[0])?;
-
-        block.branch(Expr::add(
-            expr_const(instruction.address as u64 + 8, 32),
-            imm
-        )?);
-        
-        block.index()
-    };
-
-    control_flow_graph.set_entry(block_index)?;
-    control_flow_graph.set_exit(block_index)?;
-
-    Ok(())
-}
-
-
-pub fn bfc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
-
-    // create a block for this instruction
-    let block_index = {
-        let block = control_flow_graph.new_block()?;
-
-        // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        let dst= get_register(detail.operands[0].reg())?.scalar();
-        let lsb = get_operand(&detail.operands[1])?;
-        let width = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lsb = get_operand(instruction, 2)?;
+        let width = get_operand(instruction, 2)?;
 
         let mask = Expr::sub(
             expr_const(0, 32),
@@ -415,18 +446,18 @@ pub fn bfc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn bfi(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn bfi(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
 
     // create a block for this instruction
     let block_index = {
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        let dst= get_register(detail.operands[0].reg())?.scalar();
-        let lsb = get_operand(&detail.operands[1])?;
-        let width = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lsb = get_operand(instruction, 2)?;
+        let width = get_operand(instruction, 2)?;
 
         let mask = Expr::sub(
             expr_const(0, 32),
@@ -447,7 +478,10 @@ pub fn bfi(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn bic(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn bic(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
@@ -455,11 +489,9 @@ pub fn bic(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
         let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_REG);
-        assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_REG);
-        let dst = get_register(detail.operands[0].reg())?.scalar();
-        let lhs = get_register(detail.operands[1].reg())?.expression();
-        let rhs = get_operand(&detail.operands[2])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
         let rhs = Expr::xor(expr_const(0xffffffff, 32), rhs)?;
 
@@ -481,15 +513,16 @@ pub fn bic(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn bkpt(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn bkpt(control_flow_graph: &mut ControlFlowGraph,
+            instruction: &capstone::Instr)
+    -> Result<()> {
 
     // create a block for this instruction
     let block_index = {
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        let imm = get_operand(&detail.operands[0])?;
+        let imm = get_operand(instruction, 0)?;
 
         block.raise(Expr::cmpeq(expr_scalar("breakpoint", imm.bits()), imm)?);
         
@@ -503,15 +536,16 @@ pub fn bkpt(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::I
 }
 
 
-pub fn bl(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn bl(control_flow_graph: &mut ControlFlowGraph,
+          instruction: &capstone::Instr)
+    -> Result<()> {
 
     // create a block for this instruction
     let block_index = {
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        let dst = get_operand(&detail.operands[0])?;
+        let dst = get_operand(instruction, 0)?;
 
         block.assign(
             scalar("lr", 32),
@@ -530,15 +564,16 @@ pub fn bl(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Ins
 }
 
 
-pub fn blx(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
-    let detail = try!(details(instruction));
+pub fn blx(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
 
     // create a block for this instruction
     let block_index = {
         let block = control_flow_graph.new_block()?;
 
         // get operands
-        let dst = get_operand(&detail.operands[0])?;
+        let dst = get_operand(instruction, 0)?;
 
         block.assign(
             scalar("lr", 32),
@@ -557,17 +592,93 @@ pub fn blx(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::In
 }
 
 
-pub fn bx(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr) -> Result<()> {
+pub fn clz(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
+    let rd = get_register_scalar(instruction, 0)?;
+    let rm = get_register_expression(instruction, 1)?;
+
+    let temp = control_flow_graph.temp(rm.bits());
+
+    let head_index = {
+        let block = control_flow_graph.new_block()?;
+        block.assign(temp.clone(), expr_const(32, temp.bits()));
+        block.index()
+    };
+
+    let block_index = {
+        let block = control_flow_graph.new_block()?;
+        block.assign(temp.clone(),
+                     Expr::add(temp.clone().into(),
+                               expr_const(1, temp.bits()))?);
+        block.index()
+    };
+
+    let tail_index = {
+        let block = control_flow_graph.new_block()?;
+        block.assign(rd, Expr::sub(expr_const(32, rm.bits()),
+                                   temp.clone().into())?);
+        block.index()
+    };
+
+    let condition = Expression::trun(1, Expression::or(
+        Expression::and(
+            Expression::shr(
+                rm.clone(),
+                Expression::sub(
+                    temp.clone().into(),
+                    expr_const(1, rm.bits())
+                )?,
+            )?,
+            expr_const(1, rm.bits())
+        )?,
+        Expression::cmpeq(
+            temp.clone().into(),
+            expr_const(0, rm.bits())
+        )?
+    )?)?;
+
+    control_flow_graph.conditional_edge(head_index, tail_index,
+        condition.clone())?;
+    control_flow_graph.conditional_edge(block_index, tail_index,
+        condition.clone())?;
+    control_flow_graph.conditional_edge(head_index, block_index,
+        Expression::cmpeq(condition.clone(), expr_const(0, 1))?)?;
+    control_flow_graph.conditional_edge(block_index, block_index,
+        Expression::cmpeq(condition.clone(), expr_const(0, 1))?)?;
+        
+    control_flow_graph.set_entry(head_index)?;
+    control_flow_graph.set_exit(tail_index)?;
+
+    Ok(())
+}
+
+
+pub fn sub(control_flow_graph: &mut ControlFlowGraph,
+           instruction: &capstone::Instr)
+    -> Result<()> {
+
     let detail = try!(details(instruction));
 
     // create a block for this instruction
     let block_index = {
-        let block = control_flow_graph.new_block()?;
+        let mut block = control_flow_graph.new_block()?;
 
         // get operands
-        let dst = get_operand(&detail.operands[0])?;
+        let dst = get_register_scalar(instruction, 0)?;
+        let lhs = get_register_expression(instruction, 1)?;
+        let rhs = get_operand(instruction, 2)?;
 
-        block.branch(Expr::add(dst, expr_const(1, 32))?);
+        block.assign(dst.clone(), Expr::sub(lhs.clone(), rhs.clone())?);
+
+        if detail.update_flags {
+            set_n(&mut block, dst.clone().into())?;
+            set_z(&mut block, dst.clone().into())?;
+            block.assign(scalar("c", 1),
+                         Expr::cmpltu(lhs.clone(), dst.clone().into())?);
+            set_v(&mut block, dst.into(), lhs, rhs)?;
+        }
         
         block.index()
     };

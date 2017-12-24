@@ -21,9 +21,10 @@ pub enum Endian {
 /// Supported architectures
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Architecture {
-    X86,
+    Arm,
     Mips,
-    Mipsel
+    Mipsel,
+    X86
 }
 
 
@@ -33,6 +34,7 @@ impl Architecture {
         match *self {
             Architecture::X86 |
             Architecture::Mipsel => Endian::Little,
+            Architecture::Arm |
             Architecture::Mips => Endian::Big,
         }
     }
@@ -40,15 +42,18 @@ impl Architecture {
     /// Get the translator/lifter for this architecture.
     pub fn translator(&self) -> Box<translator::Translator> {
         match *self {
-            Architecture::X86 => Box::new(translator::x86::X86::new()),
+            Architecture::Arm => Box::new(translator::arm::Arm::new()),
             Architecture::Mips => Box::new(translator::mips::Mips::new()),
-            Architecture::Mipsel => Box::new(translator::mips::Mipsel::new())
+            Architecture::Mipsel => Box::new(translator::mips::Mipsel::new()),
+            Architecture::X86 => Box::new(translator::x86::X86::new()),
         }
     }
 
     /// Get the default calling convention for this Architecture
     pub fn calling_convention(&self) -> CallingConvention {
         match *self {
+            Architecture::Arm =>
+                CallingConvention::new(CallingConventionType::Arm),
             Architecture::Mips |
             Architecture::Mipsel =>
                 CallingConvention::new(CallingConventionType::MipsSystemV),
@@ -60,9 +65,20 @@ impl Architecture {
     /// Get the stack pointer for this architecture
     pub fn stack_pointer(&self) -> il::Scalar {
         match *self {
+            Architecture::Arm => il::scalar("sp", 32),
             Architecture::Mips |
             Architecture::Mipsel => il::scalar("$sp", 32),
             Architecture::X86 => il::scalar("esp", 32)
+        }
+    }
+
+    /// Get the number of bits in an address for this architecture
+    pub fn address_width(&self) -> usize {
+        match *self {
+            Architecture::Arm |
+            Architecture::Mips |
+            Architecture::Mipsel |
+            Architecture::X86 => 32
         }
     }
 }
@@ -75,6 +91,7 @@ fn test_x86() {
     assert_eq!(arch.stack_pointer(), il::scalar("esp", 32));
     assert_eq!(*arch.calling_convention()
                     .return_register(), il::scalar("eax", 32));
+    assert_eq!(arch.address_width(), 32);
 }
 
 #[test]
@@ -84,6 +101,7 @@ fn test_mips() {
     assert_eq!(arch.stack_pointer(), il::scalar("$sp", 32));
     assert_eq!(*arch.calling_convention()
                     .return_register(), il::scalar("$v0", 32));
+    assert_eq!(arch.address_width(), 32);
 }
 
 #[test]
@@ -93,4 +111,5 @@ fn test_mipsel() {
     assert_eq!(arch.stack_pointer(), il::scalar("$sp", 32));
     assert_eq!(*arch.calling_convention()
                     .return_register(), il::scalar("$v0", 32));
+    assert_eq!(arch.address_width(), 32);
 }
