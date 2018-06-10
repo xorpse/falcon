@@ -8,6 +8,8 @@ use std::collections::HashSet;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallingConventionType {
     Amd64SystemV,
+    Arm,
+    Armeb,
     Cdecl,
     MipsSystemV,
     MipselSystemV
@@ -116,6 +118,43 @@ impl CallingConvention {
                     stack_argument_length: 8,
                     return_address_type: return_type,
                     return_register: il::scalar("rax", 64)
+                }
+            },
+            CallingConventionType::Arm |
+            CallingConventionType::Armeb => {
+                let argument_registers = vec![
+                    il::scalar("r0", 32), il::scalar("r1", 32),
+                    il::scalar("r2", 32), il::scalar("r3", 32)
+                ];
+                let mut preserved_registers = HashSet::new();
+                preserved_registers.insert(il::scalar("r4", 32));
+                preserved_registers.insert(il::scalar("r5", 32));
+                preserved_registers.insert(il::scalar("r6", 32));
+                preserved_registers.insert(il::scalar("r7", 32));
+                preserved_registers.insert(il::scalar("r8", 32));
+                preserved_registers.insert(il::scalar("r9", 32));
+                preserved_registers.insert(il::scalar("r10", 32));
+                preserved_registers.insert(il::scalar("r11", 32));
+                preserved_registers.insert(il::scalar("sp", 32));
+                preserved_registers.insert(il::scalar("lr", 32));
+
+                let mut trashed_registers = HashSet::new();
+                trashed_registers.insert(il::scalar("r0", 32));
+                trashed_registers.insert(il::scalar("r1", 32));
+                trashed_registers.insert(il::scalar("r2", 32));
+                trashed_registers.insert(il::scalar("r3", 32));
+                trashed_registers.insert(il::scalar("r12", 32));
+
+                let return_type = ReturnAddressType::Register(il::scalar("lr", 32));
+
+                CallingConvention {
+                    argument_registers: argument_registers,
+                    preserved_registers: preserved_registers,
+                    trashed_registers: trashed_registers,
+                    stack_argument_offset: 0,
+                    stack_argument_length: 4,
+                    return_address_type: return_type,
+                    return_register: il::scalar("r0", 32)
                 }
             },
             CallingConventionType::Cdecl => {

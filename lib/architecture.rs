@@ -68,9 +68,9 @@ impl Architecture for Arm {
         unimplemented!()
     }
     fn calling_convention(&self) -> CallingConvention {
-        unimplemented!()
+        CallingConvention::new(CallingConventionType::Arm)
     }
-    fn stack_pointer(&self) -> il::Scalar { il::scalar("$sp", 32) }
+    fn stack_pointer(&self) -> il::Scalar { il::scalar("sp", 32) }
     fn word_size(&self) -> usize { 32 }
     fn box_clone(&self) -> Box<Architecture> { Box::new(self.clone()) }
 }
@@ -90,9 +90,9 @@ impl Architecture for Armeb {
         unimplemented!()
     }
     fn calling_convention(&self) -> CallingConvention {
-        unimplemented!()
+        CallingConvention::new(CallingConventionType::Armeb)
     }
-    fn stack_pointer(&self) -> il::Scalar { il::scalar("$sp", 32) }
+    fn stack_pointer(&self) -> il::Scalar { il::scalar("sp", 32) }
     fn word_size(&self) -> usize { 32 }
     fn box_clone(&self) -> Box<Architecture> { Box::new(self.clone()) }
 }
