@@ -54,6 +54,49 @@ impl Architecture for Amd64 {
     fn box_clone(&self) -> Box<Architecture> { Box::new(self.clone()) }
 }
 
+/// The 32-bit Arm Architecture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Arm {}
+
+impl Arm {
+    pub fn new() -> Arm { Arm {} }
+}
+
+impl Architecture for Arm {
+    fn endian(&self) -> Endian { Endian::Little }
+    fn translator(&self) -> Box<translator::Translator> {
+        unimplemented!()
+    }
+    fn calling_convention(&self) -> CallingConvention {
+        unimplemented!()
+    }
+    fn stack_pointer(&self) -> il::Scalar { il::scalar("$sp", 32) }
+    fn word_size(&self) -> usize { 32 }
+    fn box_clone(&self) -> Box<Architecture> { Box::new(self.clone()) }
+}
+
+
+/// The 32-bit Armeb Architecture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Armeb {}
+
+impl Armeb {
+    pub fn new() -> Armeb { Armeb {} }
+}
+
+impl Architecture for Armeb {
+    fn endian(&self) -> Endian { Endian::Big }
+    fn translator(&self) -> Box<translator::Translator> {
+        unimplemented!()
+    }
+    fn calling_convention(&self) -> CallingConvention {
+        unimplemented!()
+    }
+    fn stack_pointer(&self) -> il::Scalar { il::scalar("$sp", 32) }
+    fn word_size(&self) -> usize { 32 }
+    fn box_clone(&self) -> Box<Architecture> { Box::new(self.clone()) }
+}
+
 
 /// The 32-bit Mips Architecture.
 #[derive(Clone, Debug, Eq, PartialEq)]
