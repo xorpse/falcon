@@ -31,6 +31,14 @@ impl Elf {
                 if elf.header.e_machine == goblin::elf::header::EM_386 {
                     Box::new(X86::new())
                 }
+                else if elf.header.e_machine == goblin::elf::header::EM_ARM {
+                    match elf.header.endianness()? {
+                        goblin::container::Endian::Big =>
+                            Box::new(Armeb::new()) as Box<Architecture>,
+                        goblin::container::Endian::Little =>
+                            Box::new(Arm::new()) as Box<Architecture>,
+                    }
+                }
                 else if elf.header.e_machine == goblin::elf::header::EM_MIPS {
                     match elf.header.endianness()? {
                         goblin::container::Endian::Big =>

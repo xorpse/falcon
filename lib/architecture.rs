@@ -65,7 +65,7 @@ impl Arm {
 impl Architecture for Arm {
     fn endian(&self) -> Endian { Endian::Little }
     fn translator(&self) -> Box<translator::Translator> {
-        unimplemented!()
+        Box::new(translator::arm::Arm::new())
     }
     fn calling_convention(&self) -> CallingConvention {
         CallingConvention::new(CallingConventionType::Arm)
@@ -87,7 +87,7 @@ impl Armeb {
 impl Architecture for Armeb {
     fn endian(&self) -> Endian { Endian::Big }
     fn translator(&self) -> Box<translator::Translator> {
-        unimplemented!()
+        Box::new(translator::arm::Armeb::new())
     }
     fn calling_convention(&self) -> CallingConvention {
         CallingConvention::new(CallingConventionType::Armeb)

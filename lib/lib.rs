@@ -54,7 +54,6 @@ extern crate serde;
 extern crate serde_derive;
 extern crate serde_json;
 
-
 pub mod analysis;
 pub mod architecture;
 pub mod executor;
@@ -63,7 +62,6 @@ pub mod il;
 pub mod loader;
 pub mod memory;
 pub mod translator;
-
 
 
 #[cfg(not(feature = "thread_safe"))]
