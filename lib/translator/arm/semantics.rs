@@ -1,5 +1,5 @@
 use falcon_capstone::capstone;
-use falcon_capstone::capstone_sys::{arm_cc, arm_insn, arm_op_type, arm_reg};
+use falcon_capstone::capstone_sys::{arm_cc, arm_insn, arm_op_type, arm_reg, arm_shifter};
 use error::*;
 use il::*;
 use il::Expression as Expr;
@@ -146,6 +146,115 @@ impl ArmState {
         })
     }
 
+    pub fn get_shifted(&self, instruction: &capstone::Instr, index: usize)
+        -> Result<(Expression, Expression)> {
+        let detail = details(instruction)?;
+        let operand = detail.operands[index];
+        let value = self.get_operand(instruction, index)?;
+
+        match operand.shift.type_ {
+            arm_shifter::ARM_SFT_ASR => {
+                let bits = value.bits();
+                let ext = Expr::sext(operand.shift.value as usize + bits, value)?;
+
+                let res = Expr::trun(bits, Expr::shr(ext.clone(), expr_const(operand.shift.value as u64, bits))?)?;
+                let carry_out = Expr::trun(1, Expr::shr(ext, expr_const(operand.shift.value as u64 - 1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_ASR_REG => {
+                let bits = value.bits();
+                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+                let ext = Expr::sext(bits * 2, value)?; // XXX: Is this okay?
+
+                let res = Expr::trun(bits, Expr::shr(ext.clone(), reg.clone())?)?;
+                let carry_out = Expr::trun(1, Expr::shr(ext, Expr::sub(reg, expr_const(1, bits))?)?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_LSL => {
+                let bits = value.bits();
+
+                let res = Expr::trun(bits, Expr::shl(value.clone(), expr_const(operand.shift.value as u64, bits))?)?;
+                let carry_out = Expr::trun(1, Expr::shr(value, expr_const(bits as u64 - operand.shift.value as u64, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_LSL_REG => {
+                let bits = value.bits();
+                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+
+                let res = Expr::trun(bits, Expr::shl(value.clone(), reg.clone())?)?;
+                let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(expr_const(bits as u64, bits), reg)?)?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_LSR => {
+                let bits = value.bits();
+
+                let res = Expr::trun(bits, Expr::shr(value.clone(), expr_const(operand.shift.value as u64, bits))?)?;
+                let carry_out = Expr::trun(1, Expr::shr(value, expr_const(operand.shift.value as u64 - 1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_LSR_REG => {
+                let bits = value.bits();
+                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+
+                let res = Expr::trun(bits, Expr::shr(value.clone(), reg.clone())?)?;
+                let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(reg, expr_const(1, bits))?)?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_ROR => {
+                let bits = value.bits();
+
+                let m = operand.shift.value as u64 % value.bits() as u64;
+
+                let rs = expr_const(m, bits);
+                let ls = expr_const(bits as u64 - m, bits);
+
+                let res = Expr::or(Expr::shr(value.clone(), rs)?, Expr::shl(value, ls)?)?;
+                let carry_out = Expr::trun(1, Expr::shr(res.clone(), expr_const(bits as u64 - 1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_ROR_REG => {
+                let bits = value.bits();
+                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+
+                let m = Expr::modu(reg, expr_const(bits as u64, bits))?;
+
+                let rs = m.clone();
+                let ls = Expr::sub(expr_const(bits as u64, bits), m)?;
+
+                let res = Expr::or(Expr::shr(value.clone(), rs)?, Expr::shl(value, ls)?)?;
+                let carry_out = Expr::trun(1, Expr::shr(res.clone(), expr_const(bits as u64 - 1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_RRX => {
+                let bits = value.bits();
+                let carry_out = Expr::trun(1, value.clone())?;
+                let c_mask = Expr::shl(Expr::zext(bits, expr_scalar("c", 1))?, expr_const(bits as u64 - 1, bits))?;
+
+                let res = Expr::or(c_mask, Expr::shr(value, expr_const(1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_RRX_REG => {
+                let bits = value.bits();
+                let carry_out = Expr::trun(1, value.clone())?;
+                let c_mask = Expr::shl(Expr::zext(bits, expr_scalar("c", 1))?, expr_const(bits as u64 - 1, bits))?;
+
+                let res = Expr::or(c_mask, Expr::shr(value, expr_const(1, bits))?)?;
+
+                Ok((res, carry_out))
+            },
+            arm_shifter::ARM_SFT_INVALID => Err("Shift type invalid".into()),
+        }
+    }
+
     pub fn adc(&mut self,
                control_flow_graph: &mut ControlFlowGraph,
                instruction: &capstone::Instr)
@@ -182,7 +291,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
     pub fn add(&mut self,
@@ -216,7 +325,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -251,7 +360,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -286,7 +395,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -346,7 +455,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -382,7 +491,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -415,7 +524,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -451,7 +560,7 @@ impl ArmState {
         control_flow_graph.set_entry(block_index)?;
         control_flow_graph.set_exit(block_index)?;
 
-        Ok(())
+        and_cc(control_flow_graph, instruction)
     }
 
 
@@ -844,95 +953,99 @@ pub fn cc(control_flow_graph: &mut ControlFlowGraph, condition: Expression) -> R
     Ok(())
 }
 
-pub fn cc_eq(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))?)
+pub fn cc_eq() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))
 }
 
-pub fn cc_ne(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))?)
+pub fn cc_ne() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))
 }
 
-pub fn cc_cs(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("c", 1), expr_const(1, 1))?)
+pub fn cc_cs() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("c", 1), expr_const(1, 1))
 }
 
-pub fn cc_cc(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("c", 1), expr_const(0, 1))?)
+pub fn cc_cc() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("c", 1), expr_const(0, 1))
 }
 
-pub fn cc_mi(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("n", 1), expr_const(1, 1))?)
+pub fn cc_mi() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("n", 1), expr_const(1, 1))
 }
 
-pub fn cc_pl(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("n", 1), expr_const(0, 1))?)
+pub fn cc_pl() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("n", 1), expr_const(0, 1))
 }
 
-pub fn cc_vs(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("v", 1), expr_const(1, 1))?)
+pub fn cc_vs() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("v", 1), expr_const(1, 1))
 }
 
-pub fn cc_vc(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("v", 1), expr_const(0, 1))?)
+pub fn cc_vc() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("v", 1), expr_const(0, 1))
 }
 
-pub fn cc_hi(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph,
-       Expr::and(
-           Expr::cmpeq(expr_scalar("c", 1), expr_const(1, 1))?,
-           Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))?)?)
+pub fn cc_hi() -> Result<Expr> {
+   Expr::and(
+       Expr::cmpeq(expr_scalar("c", 1), expr_const(1, 1))?,
+       Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))?)
 }
 
-pub fn cc_ls(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph,
-       Expr::or(
-           Expr::cmpeq(expr_scalar("c", 1), expr_const(0, 1))?,
-           Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))?)?)
+pub fn cc_ls() -> Result<Expr> {
+   Expr::or(
+       Expr::cmpeq(expr_scalar("c", 1), expr_const(0, 1))?,
+       Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))?)
 }
 
-pub fn cc_ge(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpeq(expr_scalar("n", 1), expr_scalar("v", 1))?)
+pub fn cc_ge() -> Result<Expr> {
+    Expr::cmpeq(expr_scalar("n", 1), expr_scalar("v", 1))
 }
 
-pub fn cc_lt(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph, Expr::cmpneq(expr_scalar("n", 1), expr_scalar("v", 1))?)
+pub fn cc_lt() -> Result<Expr> {
+    Expr::cmpneq(expr_scalar("n", 1), expr_scalar("v", 1))
 }
 
-pub fn cc_gt(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph,
-       Expr::and(
-           Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))?,
-           Expr::cmpeq(expr_scalar("n", 1), expr_scalar("v", 1))?)?)
+pub fn cc_gt() -> Result<Expr> {
+   Expr::and(
+       Expr::cmpeq(expr_scalar("z", 1), expr_const(0, 1))?,
+       Expr::cmpeq(expr_scalar("n", 1), expr_scalar("v", 1))?)
 }
 
-pub fn cc_le(control_flow_graph: &mut ControlFlowGraph) -> Result<()> {
-    cc(control_flow_graph,
-       Expr::or(
-           Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))?,
-           Expr::cmpneq(expr_scalar("n", 1), expr_scalar("v", 1))?)?)
+pub fn cc_le() -> Result<Expr> {
+   Expr::or(
+       Expr::cmpeq(expr_scalar("z", 1), expr_const(1, 1))?,
+       Expr::cmpneq(expr_scalar("n", 1), expr_scalar("v", 1))?)
+}
+
+pub fn cc_to_expr(instruction: &capstone::Instr) -> Result<Option<Expr>> {
+    let detail = details(&instruction)?;
+
+    match detail.cc {
+        arm_cc::ARM_CC_EQ => cc_eq().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_NE => cc_ne().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_HS => cc_cs().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_LO => cc_cc().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_MI => cc_mi().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_PL => cc_pl().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_VS => cc_vs().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_VC => cc_vc().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_HI => cc_hi().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_LS => cc_ls().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_GE => cc_ge().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_LT => cc_lt().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_GT => cc_gt().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_LE => cc_le().map(|cc| Some(cc)),
+        arm_cc::ARM_CC_AL => Ok(None),
+        arm_cc::ARM_CC_INVALID => Err("Invalid condition code.".into()),
+    }
 }
 
 pub fn and_cc(control_flow_graph: &mut ControlFlowGraph, instruction: &capstone::Instr)
     -> Result<()> {
 
-    let detail = details(&instruction)?;
-
-    match detail.cc {
-        arm_cc::ARM_CC_EQ => cc_eq(control_flow_graph),
-        arm_cc::ARM_CC_NE => cc_ne(control_flow_graph),
-        arm_cc::ARM_CC_HS => cc_cs(control_flow_graph),
-        arm_cc::ARM_CC_LO => cc_cc(control_flow_graph),
-        arm_cc::ARM_CC_MI => cc_mi(control_flow_graph),
-        arm_cc::ARM_CC_PL => cc_pl(control_flow_graph),
-        arm_cc::ARM_CC_VS => cc_vs(control_flow_graph),
-        arm_cc::ARM_CC_VC => cc_vc(control_flow_graph),
-        arm_cc::ARM_CC_HI => cc_hi(control_flow_graph),
-        arm_cc::ARM_CC_LS => cc_ls(control_flow_graph),
-        arm_cc::ARM_CC_GE => cc_ge(control_flow_graph),
-        arm_cc::ARM_CC_LT => cc_lt(control_flow_graph),
-        arm_cc::ARM_CC_GT => cc_gt(control_flow_graph),
-        arm_cc::ARM_CC_LE => cc_le(control_flow_graph),
-        arm_cc::ARM_CC_AL => Ok(()),
-        arm_cc::ARM_CC_INVALID => Err("Invalid condition code.".into()),
+    if let Some(cond) = cc_to_expr(instruction)? {
+        cc(control_flow_graph, cond)
+    } else {
+        Ok(())
     }
 }

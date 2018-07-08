@@ -396,14 +396,34 @@ fn translate_block(bytes: &[u8], address: u64, endian: Endian, thumb: bool)
 
             // TODO: Handle conditional branching
             match instruction_id {
+                // capstone::arm_insn::ARM_INS_BL |
                 capstone::arm_insn::ARM_INS_B => {
                     let detail = semantics::details(&instruction)?;
-                    assert!(detail.operands[0].type_ == arm_op_type::ARM_OP_IMM);
-                    successors.push((detail.operands[0].imm() as u64, None));
+                    if detail.operands[0].type_ == arm_op_type::ARM_OP_IMM {
+                        if let Some(cond) = semantics::cc_to_expr(&instruction)? {
+                            successors.push((detail.operands[0].imm() as u64,
+                                            Some(cond.clone())));
+                            successors.push((detail.operands[0].imm() as u64,
+                                            Some(Expression::cmpeq(cond, expr_const(0, 1))?)))
+                        } else {
+                            successors.push((detail.operands[0].imm() as u64,
+                                            None));
+                        }
+                    };
                     break;
                 },
-                capstone::arm_insn::ARM_INS_BX |
-                capstone::arm_insn::ARM_INS_BXJ => {
+                /*
+                capstone::arm_insn::ARM_INS_BLX => {
+                    let detail = semantics::details(&instruction)?;
+                    if detail.operands[0].type_ == arm_op_type::ARM_OP_IMM {
+                        let thumb_mod = if st.is_thumb() { 0 } else { 1 };
+                        successors.push((detail.operands[0].imm() as u64 | thumb_mod, None));
+                    }
+                    break;
+                },
+                */
+                /* bx destination is always register-based
+                capstone::arm_insn::ARM_INS_BX => {
                     let detail = semantics::details(&instruction)?;
                     if detail.operands[0].type_ == arm_op_type::ARM_OP_IMM {
                         let thumb_mod = if st.is_thumb() { 0 } else { 1 };
@@ -411,40 +431,41 @@ fn translate_block(bytes: &[u8], address: u64, endian: Endian, thumb: bool)
                     };
                     break;
                 },
+                */
                 capstone::arm_insn::ARM_INS_CBNZ => {
                     let detail = semantics::details(&instruction)?;
-                    assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_IMM);
-                    let register = st.get_register_expression(&instruction, 0)?;
-                    let condition = Expression::cmpneq(register.clone(),
-                                                       expr_const(0, register.bits()))?;
-                    let thumb_mod = if st.is_thumb() { 1 } else { 0 };
+                    if detail.operands[1].type_ == arm_op_type::ARM_OP_IMM {
+                        let register = st.get_register_expression(&instruction, 0)?;
+                        let condition = Expression::cmpneq(register.clone(),
+                                                           expr_const(0, register.bits()))?;
 
-                    successors.push((
-                        detail.operands[1].imm() as u64 | thumb_mod,
-                        Some(condition.clone())
-                    ));
-                    successors.push((
-                        st.immediate_successor(&instruction) | thumb_mod,
-                        Some(Expression::cmpeq(condition, expr_const(0, 1))?)
-                    ));
+                        successors.push((
+                            detail.operands[1].imm() as u64,
+                            Some(condition.clone())
+                        ));
+                        successors.push((
+                            st.immediate_successor(&instruction),
+                            Some(Expression::cmpeq(condition, expr_const(0, 1))?)
+                        ));
+                    };
                     break; 
                 },
                 capstone::arm_insn::ARM_INS_CBZ => {
                     let detail = semantics::details(&instruction)?;
-                    assert!(detail.operands[1].type_ == arm_op_type::ARM_OP_IMM);
-                    let register = st.get_register_expression(&instruction, 0)?;
-                    let condition = Expression::cmpeq(register.clone(),
-                                                      expr_const(0, register.bits()))?;
-                    let thumb_mod = if st.is_thumb() { 1 } else { 0 };
+                        if detail.operands[1].type_ == arm_op_type::ARM_OP_IMM {
+                        let register = st.get_register_expression(&instruction, 0)?;
+                        let condition = Expression::cmpeq(register.clone(),
+                                                          expr_const(0, register.bits()))?;
 
-                    successors.push((
-                        detail.operands[1].imm() as u64 | thumb_mod,
-                        Some(condition.clone())
-                    ));
-                    successors.push((
-                        st.immediate_successor(&instruction) | thumb_mod,
-                        Some(Expression::cmpeq(condition, expr_const(0, 1))?)
-                    ));
+                        successors.push((
+                            detail.operands[1].imm() as u64,
+                            Some(condition.clone())
+                        ));
+                        successors.push((
+                            st.immediate_successor(&instruction),
+                            Some(Expression::cmpeq(condition, expr_const(0, 1))?)
+                        ));
+                    };
                     break; 
                 },
                 _ => (),
