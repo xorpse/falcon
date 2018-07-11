@@ -164,7 +164,9 @@ impl ArmState {
             },
             arm_shifter::ARM_SFT_ASR_REG => {
                 let bits = value.bits();
-                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+                let reg = Expr::modu(Expr::or(self.register_expression(instruction, operand.shift.value.into())?,
+                                     expr_const(0xff, bits))?,
+                                     expr_const(32, bits))?;
                 let ext = Expr::sext(bits * 2, value)?; // XXX: Is this okay?
 
                 let res = Expr::trun(bits, Expr::shr(ext.clone(), reg.clone())?)?;
@@ -182,7 +184,9 @@ impl ArmState {
             },
             arm_shifter::ARM_SFT_LSL_REG => {
                 let bits = value.bits();
-                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+                let reg = Expr::modu(Expr::or(self.register_expression(instruction, operand.shift.value.into())?,
+                                     expr_const(0xff, bits))?,
+                                     expr_const(32, bits))?;
 
                 let res = Expr::trun(bits, Expr::shl(value.clone(), reg.clone())?)?;
                 let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(expr_const(bits as u64, bits), reg)?)?)?;
@@ -199,7 +203,9 @@ impl ArmState {
             },
             arm_shifter::ARM_SFT_LSR_REG => {
                 let bits = value.bits();
-                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+                let reg = Expr::modu(Expr::or(self.register_expression(instruction, operand.shift.value.into())?,
+                                     expr_const(0xff, bits))?,
+                                     expr_const(32, bits))?;
 
                 let res = Expr::trun(bits, Expr::shr(value.clone(), reg.clone())?)?;
                 let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(reg, expr_const(1, bits))?)?)?;
@@ -221,7 +227,9 @@ impl ArmState {
             },
             arm_shifter::ARM_SFT_ROR_REG => {
                 let bits = value.bits();
-                let reg = self.register_expression(instruction, operand.shift.value.into())?;
+                let reg = Expr::modu(Expr::or(self.register_expression(instruction, operand.shift.value.into())?,
+                                     expr_const(0xff, bits))?,
+                                     expr_const(32, bits))?;
 
                 let m = Expr::modu(reg, expr_const(bits as u64, bits))?;
 
@@ -269,7 +277,7 @@ impl ArmState {
             // get operands
             let dst = self.get_register_scalar(instruction, 0)?;
             let lhs = self.get_register_expression(instruction, 1)?;
-            let rhs = self.get_operand(instruction, 2)?;
+            let (rhs, _) = self.get_shifted(instruction, 2)?;
 
             let expr = Expr::add(
                 Expr::add(lhs.clone(), rhs.clone())?,
@@ -308,7 +316,7 @@ impl ArmState {
             // get operands
             let dst = self.get_register_scalar(instruction, 0)?;
             let lhs = self.get_register_expression(instruction, 1)?;
-            let rhs = self.get_operand(instruction, 2)?;
+            let (rhs, _) = self.get_shifted(instruction, 2)?;
 
             block.assign(dst.clone(), Expr::add(lhs.clone(), rhs.clone())?);
 
@@ -378,14 +386,14 @@ impl ArmState {
             // get operands
             let dst = self.get_register_scalar(instruction, 0)?;
             let lhs = self.get_register_expression(instruction, 1)?;
-            let rhs = self.get_operand(instruction, 2)?;
+            let (rhs, carry) = self.get_shifted(instruction, 2)?;
 
             block.assign(dst.clone(), Expr::and(lhs.clone(), rhs.clone())?);
 
             if detail.update_flags {
                 set_n(&mut block, dst.clone().into())?;
                 set_z(&mut block, dst.clone().into())?;
-                set_c(&mut block, dst.clone().into(), lhs.clone())?;
+                block.assign(scalar("c", 1), carry);
                 set_v(&mut block, dst.into(), lhs, rhs)?;
             }
             
@@ -533,7 +541,7 @@ impl ArmState {
                instruction: &capstone::Instr)
         -> Result<()> {
 
-        let detail = try!(details(instruction));
+        let detail = details(instruction)?;
 
         // create a block for this instruction
         let block_index = {
@@ -542,7 +550,7 @@ impl ArmState {
             // get operands
             let dst = self.get_register_scalar(instruction, 0)?;
             let lhs = self.get_register_expression(instruction, 1)?;
-            let rhs = self.get_operand(instruction, 2)?;
+            let (rhs, carry) = self.get_shifted(instruction, 2)?;
 
             let rhs = Expr::xor(expr_const(0xffffffff, 32), rhs)?;
 
@@ -551,7 +559,7 @@ impl ArmState {
             if detail.update_flags {
                 set_n(&mut block, dst.clone().into())?;
                 set_z(&mut block, dst.clone().into())?;
-                // TODO: C flag should be handled here
+                block.assign(scalar("c", 1), carry);
             }
             
             block.index()
@@ -794,7 +802,7 @@ impl ArmState {
             // get operands
             let dst = self.get_register_scalar(instruction, 0)?;
             let lhs = self.get_register_expression(instruction, 1)?;
-            let rhs = self.get_operand(instruction, 2)?;
+            let (rhs, _) = self.get_shifted(instruction, 2)?;
 
             block.assign(dst.clone(), Expr::sub(lhs.clone(), rhs.clone())?);
 
