@@ -128,7 +128,8 @@ impl Translator for Arm {
         for result in translation_results {
             let (_, block_exit) = block_indices[&result.0];
             for successor in result.1.successors().iter() {
-                let (block_entry, _) = block_indices[&successor.0];
+                println!("{:x?}", successor.0);
+                let (block_entry, _) = block_indices[&(successor.0 & !1)];
                 // check for duplicate edges
                 if control_flow_graph.edge(block_exit, block_entry).is_some() {
                     continue;
@@ -298,7 +299,8 @@ impl Translator for Armeb {
 // Normalize address and extract the LSB as a flag indicating if the address
 // means we are decoding a block in Thumb-mode.
 fn normalize_address(address: u64) -> (u64, bool) {
-    (address & !1, address & 1 == 1)
+    // (address & !1, address & 1 == 1)
+    (address, address & 1 == 1)
 }
 
 
@@ -383,10 +385,12 @@ fn translate_block(bytes: &[u8], address: u64, endian: Endian, thumb: bool)
                 arm_insn::ARM_INS_BL   => st.bl(&mut instruction_graph, &instruction),
                 arm_insn::ARM_INS_BLX  => st.blx(&mut instruction_graph, &instruction),
                 arm_insn::ARM_INS_CLZ  => st.clz(&mut instruction_graph, &instruction),
+                arm_insn::ARM_INS_MOV  => st.mov(&mut instruction_graph, &instruction),
                 arm_insn::ARM_INS_SUB  => st.sub(&mut instruction_graph, &instruction),
-                _ => return Err(format!("Unhandled instruction {} at 0x{:x}",
+                _ => return Err(format!("Unhandled instruction {} at 0x{:x} ({:x?})",
                     instruction.mnemonic,
-                    instruction.address
+                    instruction.address,
+                    disassembly_bytes
                 ).into())
             }?;
 
@@ -419,10 +423,9 @@ fn translate_block(bytes: &[u8], address: u64, endian: Endian, thumb: bool)
                         let thumb_mod = if st.is_thumb() { 0 } else { 1 };
                         successors.push((detail.operands[0].imm() as u64 | thumb_mod, None));
                     }
-                    break;
+                    // break;
                 },
                 */
-                /* bx destination is always register-based
                 capstone::arm_insn::ARM_INS_BX => {
                     let detail = semantics::details(&instruction)?;
                     if detail.operands[0].type_ == arm_op_type::ARM_OP_IMM {
@@ -431,7 +434,6 @@ fn translate_block(bytes: &[u8], address: u64, endian: Endian, thumb: bool)
                     };
                     break;
                 },
-                */
                 capstone::arm_insn::ARM_INS_CBNZ => {
                     let detail = semantics::details(&instruction)?;
                     if detail.operands[1].type_ == arm_op_type::ARM_OP_IMM {

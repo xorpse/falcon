@@ -177,8 +177,8 @@ impl ArmState {
             arm_shifter::ARM_SFT_LSL => {
                 let bits = value.bits();
 
-                let res = Expr::trun(bits, Expr::shl(value.clone(), expr_const(operand.shift.value as u64, bits))?)?;
-                let carry_out = Expr::trun(1, Expr::shr(value, expr_const(bits as u64 - operand.shift.value as u64, bits))?)?;
+                let res = Expr::shl(value.clone(), expr_const(operand.shift.value as u64, 32))?;
+                let carry_out = Expr::trun(1, Expr::shr(value, expr_const(bits as u64 - operand.shift.value as u64, 32))?)?;
 
                 Ok((res, carry_out))
             },
@@ -188,8 +188,8 @@ impl ArmState {
                                      expr_const(0xff, bits))?,
                                      expr_const(32, bits))?;
 
-                let res = Expr::trun(bits, Expr::shl(value.clone(), reg.clone())?)?;
-                let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(expr_const(bits as u64, bits), reg)?)?)?;
+                let res = Expr::shl(value.clone(), reg.clone())?;
+                let carry_out = Expr::trun(1, Expr::shr(value, Expr::sub(expr_const(bits as u64, 32), reg)?)?)?;
 
                 Ok((res, carry_out))
             },
@@ -259,7 +259,7 @@ impl ArmState {
 
                 Ok((res, carry_out))
             },
-            arm_shifter::ARM_SFT_INVALID => Err("Shift type invalid".into()),
+            arm_shifter::ARM_SFT_INVALID => Ok((value, expr_scalar("c", 1)))
         }
     }
 
@@ -785,6 +785,37 @@ impl ArmState {
         control_flow_graph.set_exit(tail_index)?;
 
         Ok(())
+    }
+
+    
+    pub fn mov(&mut self,
+               control_flow_graph: &mut ControlFlowGraph,
+               instruction: &capstone::Instr)
+        -> Result<()> {
+
+        let detail = details(instruction)?;
+
+        // create a block for this instruction
+        let block_index = {
+            let mut block = control_flow_graph.new_block()?;
+            let dst = self.get_register_scalar(&instruction, 0)?;
+            let (_, src) = self.get_shifted(&instruction, 1)?;
+
+            block.assign(dst, src.clone());
+
+            if detail.update_flags {
+                set_n(&mut block, src.clone().into())?;
+                set_z(&mut block, src.clone().into())?;
+                // TODO: set_c; see A8-485
+            }
+
+            block.index()
+        };
+
+        control_flow_graph.set_entry(block_index)?;
+        control_flow_graph.set_exit(block_index)?;
+
+        and_cc(control_flow_graph, instruction)
     }
 
 
